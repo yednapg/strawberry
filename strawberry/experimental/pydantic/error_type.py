@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import dataclasses
 import warnings
-from typing import Any, List, Optional, Sequence, Tuple, Type, cast
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Type, cast
 
 from pydantic import BaseModel
-from pydantic.fields import ModelField
 from pydantic.utils import lenient_issubclass
 
 from strawberry.auto import StrawberryAuto
@@ -17,6 +18,9 @@ from strawberry.types.type_resolver import _get_fields
 from strawberry.utils.typing import get_list_annotation, is_list
 
 from .exceptions import MissingFieldsListError
+
+if TYPE_CHECKING:
+    from pydantic.fields import ModelField
 
 
 def get_type_for_field(field: ModelField):
@@ -50,15 +54,15 @@ def field_type_to_type(type_):
 def error_type(
     model: Type[BaseModel],
     *,
-    fields: List[str] = None,
+    fields: Optional[List[str]] = None,
     name: Optional[str] = None,
     description: Optional[str] = None,
     directives: Optional[Sequence[object]] = (),
-    all_fields: bool = False
+    all_fields: bool = False,
 ):
     def wrap(cls):
         model_fields = model.__fields__
-        fields_set = set(fields) if fields else set([])
+        fields_set = set(fields) if fields else set()
 
         if fields:
             warnings.warn(
@@ -68,11 +72,11 @@ def error_type(
 
         existing_fields = getattr(cls, "__annotations__", {})
         fields_set = fields_set.union(
-            set(
+            {
                 name
                 for name, type_ in existing_fields.items()
                 if isinstance(type_, StrawberryAuto)
-            )
+            }
         )
 
         if all_fields:
@@ -103,14 +107,12 @@ def error_type(
 
         all_model_fields.extend(
             (
-                (
-                    field.name,
-                    field.type,
-                    field,
-                )
-                for field in extra_fields + private_fields
-                if not isinstance(field.type, StrawberryAuto)
+                field.name,
+                field.type,
+                field,
             )
+            for field in extra_fields + private_fields
+            if not isinstance(field.type, StrawberryAuto)
         )
 
         cls = dataclasses.make_dataclass(

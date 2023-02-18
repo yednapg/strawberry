@@ -1,9 +1,19 @@
-import dataclasses
-from typing import Any, List, NamedTuple, NoReturn, Set, Tuple, Type, Union, cast
+from __future__ import annotations
 
-from pydantic import BaseModel
-from pydantic.fields import ModelField
-from pydantic.typing import NoArgAnyCallable
+import dataclasses
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    List,
+    NamedTuple,
+    NoReturn,
+    Set,
+    Tuple,
+    Type,
+    Union,
+    cast,
+)
+
 from pydantic.utils import smart_deepcopy
 
 from strawberry.experimental.pydantic.exceptions import (
@@ -19,6 +29,11 @@ from strawberry.utils.typing import (
     is_list,
     is_optional,
 )
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+    from pydantic.fields import ModelField
+    from pydantic.typing import NoArgAnyCallable
 
 
 def normalize_type(type_) -> Any:
@@ -52,12 +67,12 @@ class DataclassCreationFields(NamedTuple):
     """Fields required for the fields parameter of make_dataclass"""
 
     name: str
-    type_annotation: Type
+    field_type: Type
     field: dataclasses.Field
 
     def to_tuple(self) -> Tuple[str, Type, dataclasses.Field]:
         # fields parameter wants (name, type, Field)
-        return self.name, self.type_annotation, self.field
+        return self.name, self.field_type, self.field
 
 
 def get_default_factory_for_field(
@@ -66,7 +81,8 @@ def get_default_factory_for_field(
     """
     Gets the default factory for a pydantic field.
 
-    Handles mutable defaults when making the dataclass by using pydantic's smart_deepcopy
+    Handles mutable defaults when making the dataclass by
+    using pydantic's smart_deepcopy
 
     Returns optionally a NoArgAnyCallable representing a default_factory parameter
     """
@@ -84,7 +100,7 @@ def get_default_factory_for_field(
     # defining both default and default_factory is not supported
 
     if has_factory and has_default:
-        default_factory = cast(NoArgAnyCallable, default_factory)
+        default_factory = cast("NoArgAnyCallable", default_factory)
 
         raise BothDefaultAndDefaultFactoryDefinedError(
             default=default, default_factory=default_factory
@@ -93,7 +109,7 @@ def get_default_factory_for_field(
     # if we have a default_factory, we should return it
 
     if has_factory:
-        default_factory = cast(NoArgAnyCallable, default_factory)
+        default_factory = cast("NoArgAnyCallable", default_factory)
 
         return default_factory
 

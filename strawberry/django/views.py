@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import asyncio
 import json
-from typing import Any, Dict, Optional, Type
+import warnings
+from typing import TYPE_CHECKING, Any, Dict, Optional, Type
 
 from django.core.exceptions import BadRequest, SuspiciousOperation
 from django.core.serializers.json import DjangoJSONEncoder
-from django.http import Http404, HttpRequest, HttpResponseNotAllowed, JsonResponse
+from django.http import Http404, HttpResponseNotAllowed, JsonResponse
 from django.http.response import HttpResponse
 from django.template import RequestContext, Template
 from django.template.exceptions import TemplateDoesNotExist
@@ -17,19 +20,23 @@ from django.views.generic import View
 from strawberry.exceptions import MissingQueryError
 from strawberry.file_uploads.utils import replace_placeholders_with_files
 from strawberry.http import (
-    GraphQLHTTPResponse,
-    GraphQLRequestData,
     parse_query_params,
     parse_request_data,
     process_result,
 )
 from strawberry.schema.exceptions import InvalidOperationTypeError
-from strawberry.types import ExecutionResult
 from strawberry.types.graphql import OperationType
 from strawberry.utils.graphiql import get_graphiql_html
 
-from ..schema import BaseSchema
 from .context import StrawberryDjangoContext
+
+if TYPE_CHECKING:
+    from django.http import HttpRequest
+
+    from strawberry.http import GraphQLHTTPResponse, GraphQLRequestData
+    from strawberry.types import ExecutionResult
+
+    from ..schema import BaseSchema
 
 
 class TemporalHttpResponse(JsonResponse):
@@ -42,11 +49,11 @@ class TemporalHttpResponse(JsonResponse):
         """Adopted from Django to handle `status_code=None`."""
         if self.status_code is not None:
             return super().__repr__()
-        return "<%(cls)s status_code=%(status_code)s%(content_type)s>" % {
-            "cls": self.__class__.__name__,
-            "status_code": self.status_code,
-            "content_type": self._content_type_for_repr,
-        }
+        return "<{cls} status_code={status_code}{content_type}>".format(
+            cls=self.__class__.__name__,
+            status_code=self.status_code,
+            content_type=self._content_type_for_repr,
+        )
 
 
 class BaseView(View):
@@ -54,22 +61,41 @@ class BaseView(View):
     graphiql = True
     allow_queries_via_get = True
     schema: Optional[BaseSchema] = None
-    json_encoder: Type[json.JSONEncoder] = DjangoJSONEncoder
+    json_encoder: Optional[Type[json.JSONEncoder]] = None
     json_dumps_params: Optional[Dict[str, Any]] = None
 
     def __init__(
         self,
         schema: BaseSchema,
-        graphiql=True,
-        allow_queries_via_get=True,
-        subscriptions_enabled=False,
+        graphiql: bool = True,
+        allow_queries_via_get: bool = True,
+        subscriptions_enabled: bool = False,
         **kwargs: Any,
     ):
         self.schema = schema
         self.graphiql = graphiql
         self.allow_queries_via_get = allow_queries_via_get
         self.subscriptions_enabled = subscriptions_enabled
+
         super().__init__(**kwargs)
+
+        self.json_dumps_params = kwargs.pop("json_dumps_params", self.json_dumps_params)
+
+        if self.json_dumps_params:
+            warnings.warn(
+                "json_dumps_params is deprecated, override encode_json instead",
+                DeprecationWarning,
+            )
+
+            self.json_encoder = DjangoJSONEncoder
+
+        self.json_encoder = kwargs.pop("json_encoder", self.json_encoder)
+
+        if self.json_encoder is not None:
+            warnings.warn(
+                "json_encoder is deprecated, override encode_json instead",
+                DeprecationWarning,
+            )
 
     def parse_body(self, request: HttpRequest) -> Dict[str, Any]:
         content_type = request.content_type or ""
@@ -108,13 +134,10 @@ class BaseView(View):
             data = self.parse_body(request)
         except json.decoder.JSONDecodeError:
             raise SuspiciousOperation("Unable to parse request body as JSON")
+        except KeyError:
+            raise BadRequest("File(s) missing in form data")
 
-        try:
-            request_data = parse_request_data(data)
-        except MissingQueryError:
-            raise SuspiciousOperation("No GraphQL query found in the request")
-
-        return request_data
+        return parse_request_data(data)
 
     def _render_graphiql(self, request: HttpRequest, context=None):
         if not self.graphiql:
@@ -135,11 +158,12 @@ class BaseView(View):
 
     def _create_response(
         self, response_data: GraphQLHTTPResponse, sub_response: HttpResponse
-    ) -> JsonResponse:
-        response = JsonResponse(
-            response_data,
-            encoder=self.json_encoder,
-            json_dumps_params=self.json_dumps_params,
+    ) -> HttpResponse:
+        data = self.encode_json(response_data)
+
+        response = HttpResponse(
+            data,
+            content_type="application/json",
         )
 
         for name, value in sub_response.items():
@@ -152,6 +176,19 @@ class BaseView(View):
             response.cookies[name] = value
 
         return response
+
+    def encode_json(self, response_data: GraphQLHTTPResponse) -> str:
+        if self.json_dumps_params:
+            assert self.json_encoder
+
+            return json.dumps(
+                response_data, cls=self.json_encoder, **self.json_dumps_params
+            )
+
+        if self.json_encoder:
+            return json.dumps(response_data, cls=self.json_encoder)
+
+        return json.dumps(response_data)
 
 
 class GraphQLView(BaseView):
@@ -201,6 +238,8 @@ class GraphQLView(BaseView):
             )
         except InvalidOperationTypeError as e:
             raise BadRequest(e.as_http_error_reason(method)) from e
+        except MissingQueryError:
+            raise SuspiciousOperation("No GraphQL query found in the request")
 
         response_data = self.process_result(request=request, result=result)
 
@@ -255,6 +294,8 @@ class AsyncGraphQLView(BaseView):
             )
         except InvalidOperationTypeError as e:
             raise BadRequest(e.as_http_error_reason(method)) from e
+        except MissingQueryError:
+            raise SuspiciousOperation("No GraphQL query found in the request")
 
         response_data = await self.process_result(request=request, result=result)
 

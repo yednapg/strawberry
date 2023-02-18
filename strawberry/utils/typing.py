@@ -1,7 +1,13 @@
 import sys
 from collections.abc import AsyncGenerator
-from typing import _GenericAlias  # type: ignore
-from typing import ClassVar, Generic, Type, TypeVar, Union
+from typing import (  # type: ignore
+    ClassVar,
+    Generic,
+    Type,
+    TypeVar,
+    Union,
+    _GenericAlias,  # type: ignore
+)
 
 
 def is_list(annotation: object) -> bool:
@@ -42,13 +48,13 @@ def is_optional(annotation: Type) -> bool:
     types = annotation.__args__
 
     # A Union to be optional needs to have at least one None type
-    return any([x == None.__class__ for x in types])  # noqa:E711
+    return any([x == None.__class__ for x in types])
 
 
 def get_optional_annotation(annotation: Type) -> Type:
     types = annotation.__args__
 
-    non_none_types = tuple(x for x in types if x != None.__class__)  # noqa:E711
+    non_none_types = tuple(x for x in types if x != None.__class__)
 
     # if we have multiple non none types we want to return a copy of this
     # type (normally a Union type).

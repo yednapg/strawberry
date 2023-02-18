@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import asyncio
+import json
 from datetime import timedelta
+from typing import TYPE_CHECKING, Iterable
 
 from aiohttp import web
 from strawberry.aiohttp.handlers import (
@@ -7,10 +11,13 @@ from strawberry.aiohttp.handlers import (
     GraphQLWSHandler,
     HTTPHandler,
 )
-from strawberry.http import GraphQLHTTPResponse, process_result
-from strawberry.schema import BaseSchema
+from strawberry.http import process_result
 from strawberry.subscriptions import GRAPHQL_TRANSPORT_WS_PROTOCOL, GRAPHQL_WS_PROTOCOL
-from strawberry.types import ExecutionResult
+
+if TYPE_CHECKING:
+    from strawberry.http import GraphQLHTTPResponse
+    from strawberry.schema import BaseSchema
+    from strawberry.types import ExecutionResult
 
 
 class GraphQLView:
@@ -30,7 +37,10 @@ class GraphQLView:
         keep_alive: bool = True,
         keep_alive_interval: float = 1,
         debug: bool = False,
-        subscription_protocols=(GRAPHQL_TRANSPORT_WS_PROTOCOL, GRAPHQL_WS_PROTOCOL),
+        subscription_protocols: Iterable[str] = (
+            GRAPHQL_TRANSPORT_WS_PROTOCOL,
+            GRAPHQL_WS_PROTOCOL,
+        ),
         connection_init_wait_timeout: timedelta = timedelta(minutes=1),
     ):
         self.schema = schema
@@ -52,7 +62,7 @@ class GraphQLView:
                     schema=self.schema,
                     debug=self.debug,
                     connection_init_wait_timeout=self.connection_init_wait_timeout,
-                    get_context=self.get_context,
+                    get_context=self.get_context,  # type: ignore
                     get_root_value=self.get_root_value,
                     request=request,
                 ).handle()
@@ -77,6 +87,7 @@ class GraphQLView:
                 allow_queries_via_get=self.allow_queries_via_get,
                 get_context=self.get_context,
                 get_root_value=self.get_root_value,
+                encode_json=self.encode_json,
                 process_result=self.process_result,
                 request=request,
             ).handle()
@@ -93,3 +104,6 @@ class GraphQLView:
         self, request: web.Request, result: ExecutionResult
     ) -> GraphQLHTTPResponse:
         return process_result(result)
+
+    def encode_json(self, response_data: GraphQLHTTPResponse) -> str:
+        return json.dumps(response_data)

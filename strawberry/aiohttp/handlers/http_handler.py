@@ -1,17 +1,22 @@
+from __future__ import annotations
+
 import json
 from io import BytesIO
-from typing import Any, Dict, Union
-
-from typing_extensions import Literal
+from typing import TYPE_CHECKING, Any, Dict, Union
 
 from aiohttp import web
 from strawberry.exceptions import MissingQueryError
 from strawberry.file_uploads.utils import replace_placeholders_with_files
-from strawberry.http import GraphQLRequestData, parse_query_params, parse_request_data
-from strawberry.schema import BaseSchema
+from strawberry.http import parse_query_params, parse_request_data
 from strawberry.schema.exceptions import InvalidOperationTypeError
 from strawberry.types.graphql import OperationType
 from strawberry.utils.graphiql import get_graphiql_html
+
+if TYPE_CHECKING:
+    from typing_extensions import Literal
+
+    from strawberry.http import GraphQLRequestData
+    from strawberry.schema import BaseSchema
 
 
 class HTTPHandler:
@@ -22,6 +27,7 @@ class HTTPHandler:
         allow_queries_via_get: bool,
         get_context,
         get_root_value,
+        encode_json,
         process_result,
         request: web.Request,
     ):
@@ -30,6 +36,7 @@ class HTTPHandler:
         self.allow_queries_via_get = allow_queries_via_get
         self.get_context = get_context
         self.get_root_value = get_root_value
+        self.encode_json = encode_json
         self.process_result = process_result
         self.request = request
 
@@ -48,8 +55,8 @@ class HTTPHandler:
                 }
                 query_data = parse_query_params(query_params)
                 request_data = parse_request_data(query_data)
-            except MissingQueryError:
-                raise web.HTTPBadRequest(reason="No GraphQL query found in the request")
+            except json.JSONDecodeError:
+                raise web.HTTPBadRequest(reason="Unable to parse request body as JSON")
 
             return await self.execute_request(
                 request=request, request_data=request_data, method="GET"
@@ -73,6 +80,7 @@ class HTTPHandler:
         method: Union[Literal["GET"], Literal["POST"]],
     ) -> web.StreamResponse:
         response = web.Response()
+
         context = await self.get_context(request, response)
         root_value = await self.get_root_value(request)
 
@@ -94,23 +102,19 @@ class HTTPHandler:
             raise web.HTTPBadRequest(
                 reason=e.as_http_error_reason(method=method)
             ) from e
+        except MissingQueryError:
+            raise web.HTTPBadRequest(reason="No GraphQL query found in the request")
 
         response_data = await self.process_result(request, result)
-        response.text = json.dumps(response_data)
+
+        response.text = self.encode_json(response_data)
         response.content_type = "application/json"
+
         return response
 
     async def get_request_data(self, request: web.Request) -> GraphQLRequestData:
         data = await self.parse_body(request)
-
-        try:
-            request_data = parse_request_data(data)
-        except MissingQueryError as e:
-            raise web.HTTPBadRequest(
-                reason="No GraphQL query found in the request"
-            ) from e
-
-        return request_data
+        return parse_request_data(data)
 
     async def parse_body(self, request: web.Request) -> dict:
         if request.content_type.startswith("multipart/form-data"):
@@ -152,6 +156,7 @@ class HTTPHandler:
     def should_render_graphiql(self, request: web.Request) -> bool:
         if not self.graphiql:
             return False
+
         return any(
             supported_header in request.headers.get("Accept", "")
             for supported_header in ("text/html", "*/*")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -23,39 +24,32 @@ from graphql import (
     GraphQLField,
     GraphQLInputField,
     GraphQLInputObjectType,
-    GraphQLInputType,
     GraphQLInterfaceType,
     GraphQLList,
     GraphQLNonNull,
-    GraphQLNullableType,
     GraphQLObjectType,
-    GraphQLOutputType,
-    GraphQLResolveInfo,
-    GraphQLScalarType,
     GraphQLUnionType,
     Undefined,
-    ValueNode,
 )
 from graphql.language.directive_locations import DirectiveLocation
 
 from strawberry.annotation import StrawberryAnnotation
 from strawberry.arguments import StrawberryArgument, convert_arguments
-from strawberry.custom_scalar import ScalarDefinition, ScalarWrapper
-from strawberry.directive import StrawberryDirective
-from strawberry.enum import EnumDefinition, EnumValue
+from strawberry.custom_scalar import ScalarWrapper
+from strawberry.enum import EnumDefinition
 from strawberry.exceptions import (
+    DuplicatedTypeName,
     InvalidTypeInputForUnion,
+    InvalidUnionTypeError,
     MissingTypesForGenericError,
     ScalarAlreadyRegisteredError,
     UnresolvedFieldTypeError,
 )
-from strawberry.field import UNRESOLVED, StrawberryField
+from strawberry.field import UNRESOLVED
 from strawberry.lazy_type import LazyType
 from strawberry.private import is_private
-from strawberry.schema.config import StrawberryConfig
 from strawberry.schema.types.scalar import _make_scalar_type
-from strawberry.schema_directive import StrawberrySchemaDirective
-from strawberry.type import StrawberryList, StrawberryOptional, StrawberryType
+from strawberry.type import StrawberryList, StrawberryOptional
 from strawberry.types.info import Info
 from strawberry.types.types import TypeDefinition
 from strawberry.union import StrawberryUnion
@@ -64,6 +58,24 @@ from strawberry.utils.await_maybe import await_maybe
 
 from . import compat
 from .types.concrete_type import ConcreteType
+
+if TYPE_CHECKING:
+    from graphql import (
+        GraphQLInputType,
+        GraphQLNullableType,
+        GraphQLOutputType,
+        GraphQLResolveInfo,
+        GraphQLScalarType,
+        ValueNode,
+    )
+
+    from strawberry.custom_scalar import ScalarDefinition
+    from strawberry.directive import StrawberryDirective
+    from strawberry.enum import EnumValue
+    from strawberry.field import StrawberryField
+    from strawberry.schema.config import StrawberryConfig
+    from strawberry.schema_directive import StrawberrySchemaDirective
+    from strawberry.type import StrawberryType
 
 
 # graphql-core expects a resolver for an Enum type to return
@@ -105,7 +117,9 @@ class GraphQLCoreConverter:
         self.scalar_registry = scalar_registry
 
     def from_argument(self, argument: StrawberryArgument) -> GraphQLArgument:
-        argument_type = cast(GraphQLInputType, self.from_maybe_optional(argument.type))
+        argument_type = cast(
+            "GraphQLInputType", self.from_maybe_optional(argument.type)
+        )
         default_value = Undefined if argument.default is UNSET else argument.default
 
         return GraphQLArgument(
@@ -124,8 +138,10 @@ class GraphQLCoreConverter:
         assert enum_name is not None
 
         # Don't reevaluate known types
-        if enum_name in self.type_map:
-            graphql_enum = self.type_map[enum_name].implementation
+        cached_type = self.type_map.get(enum_name, None)
+        if cached_type:
+            self.validate_same_type_definition(enum_name, enum, cached_type)
+            graphql_enum = cached_type.implementation
             assert isinstance(graphql_enum, CustomGraphQLEnumType)  # For mypy
             return graphql_enum
 
@@ -176,7 +192,7 @@ class GraphQLCoreConverter:
 
     def from_schema_directive(self, cls: Type) -> GraphQLDirective:
         strawberry_directive = cast(
-            StrawberrySchemaDirective, cls.__strawberry_directive__
+            "StrawberrySchemaDirective", cls.__strawberry_directive__
         )
         module = sys.modules[cls.__module__]
 
@@ -213,7 +229,7 @@ class GraphQLCoreConverter:
         )
 
     def from_field(self, field: StrawberryField) -> GraphQLField:
-        field_type = cast(GraphQLOutputType, self.from_maybe_optional(field.type))
+        field_type = cast("GraphQLOutputType", self.from_maybe_optional(field.type))
 
         resolver = self.from_resolver(field)
         subscribe = None
@@ -240,7 +256,7 @@ class GraphQLCoreConverter:
         )
 
     def from_input_field(self, field: StrawberryField) -> GraphQLInputField:
-        field_type = cast(GraphQLInputType, self.from_maybe_optional(field.type))
+        field_type = cast("GraphQLInputType", self.from_maybe_optional(field.type))
         default_value: object
 
         if field.default_value is UNSET or field.default_value is dataclasses.MISSING:
@@ -262,7 +278,7 @@ class GraphQLCoreConverter:
 
     @staticmethod
     def _get_thunk_mapping(
-        fields: List[StrawberryField],
+        type_definition: TypeDefinition,
         name_converter: Callable[[StrawberryField], str],
         field_converter: Callable[[StrawberryField], FieldType],
     ) -> Dict[str, FieldType]:
@@ -279,19 +295,20 @@ class GraphQLCoreConverter:
         """
         thunk_mapping = {}
 
-        for f in fields:
-            if f.type is UNRESOLVED:
-                raise UnresolvedFieldTypeError(f.name)
+        for field in type_definition.fields:
+            if field.type is UNRESOLVED:
+                raise UnresolvedFieldTypeError(type_definition, field)
 
-            if not is_private(f.type):
-                thunk_mapping[name_converter(f)] = field_converter(f)
+            if not is_private(field.type):
+                thunk_mapping[name_converter(field)] = field_converter(field)
+
         return thunk_mapping
 
     def get_graphql_fields(
         self, type_definition: TypeDefinition
     ) -> Dict[str, GraphQLField]:
         return self._get_thunk_mapping(
-            fields=type_definition.fields,
+            type_definition=type_definition,
             name_converter=self.config.name_converter.from_field,
             field_converter=self.from_field,
         )
@@ -300,7 +317,7 @@ class GraphQLCoreConverter:
         self, type_definition: TypeDefinition
     ) -> Dict[str, GraphQLInputField]:
         return self._get_thunk_mapping(
-            fields=type_definition.fields,
+            type_definition=type_definition,
             name_converter=self.config.name_converter.from_field,
             field_converter=self.from_input_field,
         )
@@ -311,7 +328,9 @@ class GraphQLCoreConverter:
         type_name = self.config.name_converter.from_type(type_definition)
 
         # Don't reevaluate known types
-        if type_name in self.type_map:
+        cached_type = self.type_map.get(type_name, None)
+        if cached_type:
+            self.validate_same_type_definition(type_name, type_definition, cached_type)
             graphql_object_type = self.type_map[type_name].implementation
             assert isinstance(graphql_object_type, GraphQLInputObjectType)  # For mypy
             return graphql_object_type
@@ -337,8 +356,10 @@ class GraphQLCoreConverter:
         interface_name = self.config.name_converter.from_type(interface)
 
         # Don't reevaluate known types
-        if interface_name in self.type_map:
-            graphql_interface = self.type_map[interface_name].implementation
+        cached_type = self.type_map.get(interface_name, None)
+        if cached_type:
+            self.validate_same_type_definition(interface_name, interface, cached_type)
+            graphql_interface = cached_type.implementation
             assert isinstance(graphql_interface, GraphQLInterfaceType)  # For mypy
             return graphql_interface
 
@@ -368,8 +389,12 @@ class GraphQLCoreConverter:
         object_type_name = self.config.name_converter.from_type(object_type)
 
         # Don't reevaluate known types
-        if object_type_name in self.type_map:
-            graphql_object_type = self.type_map[object_type_name].implementation
+        cached_type = self.type_map.get(object_type_name, None)
+        if cached_type:
+            self.validate_same_type_definition(
+                object_type_name, object_type, cached_type
+            )
+            graphql_object_type = cached_type.implementation
             assert isinstance(graphql_object_type, GraphQLObjectType)  # For mypy
             return graphql_object_type
 
@@ -524,6 +549,7 @@ class GraphQLCoreConverter:
 
         if scalar in self.scalar_registry:
             _scalar_definition = self.scalar_registry[scalar]
+            # TODO: check why we need the cast and we are not trying with getattr first
             if isinstance(_scalar_definition, ScalarWrapper):
                 scalar_definition = _scalar_definition._scalar_definition
             else:
@@ -544,11 +570,18 @@ class GraphQLCoreConverter:
                 definition=scalar_definition, implementation=implementation
             )
         else:
-            if self.type_map[scalar_name].definition != scalar_definition:
-                raise ScalarAlreadyRegisteredError(scalar_name)
+            other_definition = self.type_map[scalar_name].definition
+
+            # TODO: the other definition might not be a scalar, we should
+            # handle this case better, since right now we assume it is a scalar
+
+            if other_definition != scalar_definition:
+                other_definition = cast("ScalarDefinition", other_definition)
+
+                raise ScalarAlreadyRegisteredError(scalar_definition, other_definition)
 
             implementation = cast(
-                GraphQLScalarType, self.type_map[scalar_name].implementation
+                "GraphQLScalarType", self.type_map[scalar_name].implementation
             )
 
         return implementation
@@ -598,6 +631,13 @@ class GraphQLCoreConverter:
 
     def from_union(self, union: StrawberryUnion) -> GraphQLUnionType:
         union_name = self.config.name_converter.from_type(union)
+
+        for type_ in union.types:
+            # This check also occurs in the Annotation resolving, but because of
+            # TypeVars, Annotations, LazyTypes, etc it can't perfectly detect issues at
+            # that stage
+            if not StrawberryUnion.is_valid_union_type(type_):
+                raise InvalidUnionTypeError(union_name, type_)
 
         # Don't reevaluate known types
         if union_name in self.type_map:
@@ -652,3 +692,85 @@ class GraphQLCoreConverter:
             return is_type_of
 
         return None
+
+    def validate_same_type_definition(
+        self, name: str, type_definition: StrawberryType, cached_type: ConcreteType
+    ) -> None:
+        # if the type definitions are the same we can return
+        if cached_type.definition == type_definition:
+            return
+
+        # otherwise we need to check if we are dealing with different instances
+        # of the same type generic type. This happens when using the same generic
+        # type in different places in the schema, like in the following example:
+
+        # >>> @strawberry.type
+        # >>> class A(Generic[T]):
+        # >>>     a: T
+
+        # >>> @strawberry.type
+        # >>> class Query:
+        # >>>     first: A[int]
+        # >>>     second: A[int]
+
+        # in theory we won't ever have duplicated definitions for the same generic,
+        # but we are doing the check in an exhaustive way just in case we missed
+        # something.
+
+        # we only do this check for TypeDefinitions, as they are the only ones
+        # that can be generic.
+        # of they are of the same generic type, we need to check if the type
+        # var map is the same, in that case we can return
+
+        if (
+            isinstance(type_definition, TypeDefinition)
+            and isinstance(cached_type.definition, TypeDefinition)
+            and cached_type.definition.concrete_of is not None
+            and cached_type.definition.concrete_of == type_definition.concrete_of
+            and (
+                cached_type.definition.type_var_map.keys()
+                == type_definition.type_var_map.keys()
+            )
+        ):
+            # manually compare type_var_maps while resolving any lazy types
+            # so that they're considered equal to the actual types they're referencing
+            equal = True
+            for type_var, type1 in cached_type.definition.type_var_map.items():
+                type2 = type_definition.type_var_map[type_var]
+                # both lazy types are always resolved because two different lazy types
+                # may be referencing the same actual type
+                if isinstance(type1, LazyType):
+                    type1 = type1.resolve_type()
+                elif isinstance(type1, StrawberryOptional) and isinstance(
+                    type1.of_type, LazyType
+                ):
+                    type1.of_type = type1.of_type.resolve_type()
+
+                if isinstance(type2, LazyType):
+                    type2 = type2.resolve_type()
+                elif isinstance(type2, StrawberryOptional) and isinstance(
+                    type2.of_type, LazyType
+                ):
+                    type2.of_type = type2.of_type.resolve_type()
+
+                if type1 != type2:
+                    equal = False
+                    break
+            if equal:
+                return
+
+        if isinstance(type_definition, TypeDefinition):
+            first_origin = type_definition.origin
+        elif isinstance(type_definition, EnumDefinition):
+            first_origin = type_definition.wrapped_cls
+        else:
+            first_origin = None
+
+        if isinstance(cached_type.definition, TypeDefinition):
+            second_origin = cached_type.definition.origin
+        elif isinstance(cached_type.definition, EnumDefinition):
+            second_origin = cached_type.definition.wrapped_cls
+        else:
+            second_origin = None
+
+        raise DuplicatedTypeName(first_origin, second_origin, name)

@@ -1,6 +1,7 @@
 import textwrap
 from enum import Enum
 from typing import Any, Generic, List, Optional, TypeVar, Union
+from typing_extensions import Self
 
 import pytest
 
@@ -36,6 +37,128 @@ def test_supports_generic_simple_type():
     assert not result.errors
     assert result.data == {
         "example": {"__typename": "IntEdge", "cursor": "1", "nodeField": 1}
+    }
+
+
+def test_supports_generic_specialized():
+    T = TypeVar("T")
+
+    @strawberry.type
+    class Edge(Generic[T]):
+        cursor: strawberry.ID
+        node_field: T
+
+    @strawberry.type
+    class IntEdge(Edge[int]):
+        ...
+
+    @strawberry.type
+    class Query:
+        @strawberry.field
+        def example(self) -> IntEdge:
+            return IntEdge(cursor=strawberry.ID("1"), node_field=1)
+
+    schema = strawberry.Schema(query=Query)
+
+    query = """{
+        example {
+            __typename
+            cursor
+            nodeField
+        }
+    }"""
+
+    result = schema.execute_sync(query)
+
+    assert not result.errors
+    assert result.data == {
+        "example": {"__typename": "IntEdge", "cursor": "1", "nodeField": 1}
+    }
+
+
+def test_supports_generic_specialized_subclass():
+    T = TypeVar("T")
+
+    @strawberry.type
+    class Edge(Generic[T]):
+        cursor: strawberry.ID
+        node_field: T
+
+    @strawberry.type
+    class IntEdge(Edge[int]):
+        ...
+
+    @strawberry.type
+    class IntEdgeSubclass(IntEdge):
+        ...
+
+    @strawberry.type
+    class Query:
+        @strawberry.field
+        def example(self) -> IntEdgeSubclass:
+            return IntEdgeSubclass(cursor=strawberry.ID("1"), node_field=1)
+
+    schema = strawberry.Schema(query=Query)
+
+    query = """{
+        example {
+            __typename
+            cursor
+            nodeField
+        }
+    }"""
+
+    result = schema.execute_sync(query)
+
+    assert not result.errors
+    assert result.data == {
+        "example": {"__typename": "IntEdgeSubclass", "cursor": "1", "nodeField": 1}
+    }
+
+
+def test_supports_generic_specialized_with_type():
+    T = TypeVar("T")
+
+    @strawberry.type
+    class Fruit:
+        name: str
+
+    @strawberry.type
+    class Edge(Generic[T]):
+        cursor: strawberry.ID
+        node_field: T
+
+    @strawberry.type
+    class FruitEdge(Edge[Fruit]):
+        ...
+
+    @strawberry.type
+    class Query:
+        @strawberry.field
+        def example(self) -> FruitEdge:
+            return FruitEdge(cursor=strawberry.ID("1"), node_field=Fruit(name="Banana"))
+
+    schema = strawberry.Schema(query=Query)
+
+    query = """{
+        example {
+            __typename
+            cursor
+            nodeField {
+                name
+            }
+        }
+    }"""
+
+    result = schema.execute_sync(query)
+
+    assert not result.errors
+    assert result.data == {
+        "example": {
+            "__typename": "FruitEdge",
+            "cursor": "1",
+            "nodeField": {"name": "Banana"},
+        }
     }
 
 
@@ -394,6 +517,47 @@ def test_generic_with_enum_as_param_of_type_inside_unions():
     assert result.data == {"result": {"__typename": "CodesErrorNode", "code": "a"}}
 
 
+def test_generic_with_enum():
+    T = TypeVar("T")
+
+    @strawberry.enum
+    class EstimatedValueEnum(Enum):
+        test = "test"
+        testtest = "testtest"
+
+    @strawberry.type
+    class EstimatedValue(Generic[T]):
+        value: T
+        type: EstimatedValueEnum
+
+    @strawberry.type
+    class Query:
+        @strawberry.field
+        def estimated_value(self) -> Optional[EstimatedValue[int]]:
+            return EstimatedValue(value=1, type=EstimatedValueEnum.test)
+
+    schema = strawberry.Schema(query=Query)
+
+    query = """{
+        estimatedValue {
+            __typename
+            value
+            type
+        }
+    }"""
+
+    result = schema.execute_sync(query)
+
+    assert not result.errors
+    assert result.data == {
+        "estimatedValue": {
+            "__typename": "IntEstimatedValue",
+            "value": 1,
+            "type": "test",
+        }
+    }
+
+
 def test_supports_generic_in_unions_multiple_vars():
     A = TypeVar("A")
     B = TypeVar("B")
@@ -747,6 +911,72 @@ def test_generic_with_arguments():
     assert str(schema) == textwrap.dedent(expected_schema).strip()
 
 
+def test_generic_argument():
+    T = TypeVar("T")
+
+    @strawberry.type
+    class Node(Generic[T]):
+        @strawberry.field
+        def edge(self, arg: T) -> bool:
+            return bool(arg)
+
+        @strawberry.field
+        def edges(self, args: List[T]) -> int:
+            return len(args)
+
+    @strawberry.type
+    class Query:
+        i_node: Node[int]
+        b_node: Node[bool]
+
+    schema = strawberry.Schema(Query)
+
+    expected_schema = """
+    type BoolNode {
+      edge(arg: Boolean!): Boolean!
+      edges(args: [Boolean!]!): Int!
+    }
+
+    type IntNode {
+      edge(arg: Int!): Boolean!
+      edges(args: [Int!]!): Int!
+    }
+
+    type Query {
+      iNode: IntNode!
+      bNode: BoolNode!
+    }
+    """
+
+    assert str(schema) == textwrap.dedent(expected_schema).strip()
+
+
+def test_generic_extra_type():
+    T = TypeVar("T")
+
+    @strawberry.type
+    class Node(Generic[T]):
+        field: T
+
+    @strawberry.type
+    class Query:
+        name: str
+
+    schema = strawberry.Schema(Query, types=[Node[int]])
+
+    expected_schema = """
+    type IntNode {
+      field: Int!
+    }
+
+    type Query {
+      name: String!
+    }
+    """
+
+    assert str(schema) == textwrap.dedent(expected_schema).strip()
+
+
 def test_generic_extending_with_type_var():
     T = TypeVar("T")
 
@@ -787,6 +1017,48 @@ def test_generic_extending_with_type_var():
     assert str(schema) == textwrap.dedent(expected_schema).strip()
 
 
+def test_self():
+    @strawberry.interface
+    class INode:
+        field: Optional[Self]
+        fields: List[Self]
+
+    @strawberry.type
+    class Node(INode):
+        ...
+
+    schema = strawberry.Schema(query=Node)
+
+    expected_schema = """
+    schema {
+      query: Node
+    }
+
+    interface INode {
+      field: INode
+      fields: [INode!]!
+    }
+
+    type Node implements INode {
+      field: Node
+      fields: [Node!]!
+    }
+    """
+
+    assert str(schema) == textwrap.dedent(expected_schema).strip()
+
+    query = """{
+        field {
+            __typename
+        }
+        fields {
+            __typename
+        }
+    }"""
+    result = schema.execute_sync(query, root_value=Node(field=None, fields=[]))
+    assert result.data == {"field": None, "fields": []}
+
+
 def test_supports_generic_input_type():
     T = TypeVar("T")
 
@@ -815,7 +1087,6 @@ def test_supports_generic_input_type():
 def test_generic_interface():
     @strawberry.interface
     class ObjectType:
-
         obj: strawberry.Private[Any]
 
         @strawberry.field

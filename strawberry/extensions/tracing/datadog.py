@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 import hashlib
 from inspect import isawaitable
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ddtrace import tracer
 
 from strawberry.extensions import Extension
 from strawberry.extensions.tracing.utils import should_skip_tracing
-from strawberry.types.execution import ExecutionContext
 from strawberry.utils.cached_property import cached_property
+
+if TYPE_CHECKING:
+    from strawberry.types.execution import ExecutionContext
 
 
 class DatadogTracingExtension(Extension):
@@ -21,6 +25,8 @@ class DatadogTracingExtension(Extension):
 
     @cached_property
     def _resource_name(self):
+        assert self.execution_context.query
+
         query_hash = self.hash_query(self.execution_context.query)
 
         if self.execution_context.operation_name:
@@ -46,6 +52,8 @@ class DatadogTracingExtension(Extension):
         self.request_span.set_tag("graphql.operation_name", self._operation_name)
 
         operation_type = "query"
+
+        assert self.execution_context.query
 
         if self.execution_context.query.strip().startswith("mutation"):
             operation_type = "mutation"
