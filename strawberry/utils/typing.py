@@ -6,7 +6,7 @@ from typing import (  # type: ignore
     Type,
     TypeVar,
     Union,
-    _GenericAlias,  # type: ignore
+    _GenericAlias,
 )
 
 
